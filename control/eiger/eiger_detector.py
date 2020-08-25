@@ -420,6 +420,9 @@ class EigerDetector(object):
         elif path == 'command/initialize':
             return self.initialize_detector()
         else:
+            # mbbi record will send integers; change to string
+            if isinstance(value, int) and "trigger_mode" in path:
+                value = str(value)
             return self._params.set(path, value)
 
     def get_value(self, item):
@@ -508,7 +511,13 @@ class EigerDetector(object):
         # Un-set stale bit-depth flag
         if item == self.DETECTOR_BITDEPTH_PARAM:
             self._stale_bitdepth = False
-        return self.parse_response(r)
+        parsed_reply = self.parse_response(r)
+        if item == 'trigger_mode':
+            # Inconsitency over mapping of index to string trigger mode;
+            # communication via integer, uniquely converted to mapping as defined in this code
+            parsed_reply[u'value'] = self.determine_trigger_index(parsed_reply[u'value'])
+            parsed_reply[u'allowed_values'] = [u'0', u'1', u'2', u'3']
+        return parsed_reply
 
     def determine_trigger_mode(self, value):
         # Intercept integer trigger modes and convert to unique string modes
@@ -519,6 +528,19 @@ class EigerDetector(object):
             return value
         elif value in trig_mode_dict.keys():
             return trig_mode_dict[value]
+        return value
+
+    def determine_trigger_index(self, value):
+        # Intercept string trigger modes and convert to unique index
+        # to remove ambiguity and handle different API mappings
+        trig_mode_dict = {'0': 'ints', '1': 'inte', '2': 'exts', '3': 'exte'}
+
+        if value in trig_mode_dict.keys():
+            return value
+        elif value in trig_mode_dict.values():
+            for key, val in trig_mode_dict.items(): 
+                if val == value: 
+                    return key 
         return value
 
     def write_detector_config(self, item, value):
@@ -744,7 +766,6 @@ class EigerDetector(object):
                 self.read_all_config()
 
     def do_check_status(self):
-        return
         while self._executing:
             for status in self.DETECTOR_STATUS:
                 try:
