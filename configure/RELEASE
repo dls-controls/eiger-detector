@@ -2,3 +2,4 @@ TOOLS_SUPPORT=/dls_sw/prod/tools/RHEL7-x86_64
 CMAKE = $(TOOLS_SUPPORT)/cmake/3-9-6
 LOG4CXX = $(TOOLS_SUPPORT)/log4cxx/0-10-0dls2
 ODIN_DATA = $(TOOLS_SUPPORT)/odin-data/1.10.1+dls1
+BOOST = $(TOOLS_SUPPORT)/boost/1-53-0
