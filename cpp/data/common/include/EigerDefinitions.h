@@ -59,6 +59,7 @@ namespace Eiger {
   const std::string CONTROL_OFFSET = "offset";
   const std::string CONTROL_ACQ_ID = "acqid";
   const std::string CONTROL_FWD_STREAM = "forward_stream";
+  const std::string CONTROL_DEV_SHM_CACHE = "dev_shm_cache";
   const std::string CONTROL_BLOCK_SIZE = "block_size";
 
   const std::string CONTROL_RESPONSE_OK = "{\"msg_type\":\"ack\",\"msg_val\":\"configure\", \"params\": {}}";
@@ -74,6 +75,8 @@ namespace Eiger {
   static const std::string STATE_DSTR_IMAGE = "DSTR_IMAGE";
   static const std::string STATE_DSTR_END = "DSTR_END";
   static const std::string STATE_KILL_REQUESTED = "KILL_REQUESTED";
+
+  static const std::string DEV_SHM_PATH = "/dev/shm/eiger";
 
   enum EigerMessageType { GLOBAL_HEADER_NONE, GLOBAL_HEADER_CONFIG, GLOBAL_HEADER_FLATFIELD, GLOBAL_HEADER_MASK, GLOBAL_HEADER_COUNTRATE, GLOBAL_HEADER_APPENDIX, IMAGE_DATA, IMAGE_APPENDIX, END_OF_STREAM};
 
@@ -101,6 +104,7 @@ namespace Eiger {
   } FrameHeader;
 
   static const size_t frame_size_500K    =  2117680 + sizeof(FrameHeader); // 529,420 pixels at 32 bit pixel depth
+  static const size_t frame_size_1M      = 4387800 + sizeof(FrameHeader); // 1,096,950 pixels at 32 bit pixel depth
   static const size_t frame_size_4M      = 17942760 + sizeof(FrameHeader); // 4,485,690 pixels at 32 bit pixel depth
   static const size_t frame_size_9M      = 40553184 + sizeof(FrameHeader); // 10,138,296 pixels at 32 bit pixel depth
   static const size_t frame_size_16M     = 72558600 + sizeof(FrameHeader); // 18,139,650 pixels at 32 bit pixel depth
