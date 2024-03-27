@@ -10,6 +10,7 @@ build()
     echo "CMake Configure"
     ${CMAKE_BIN}/cmake \
         -DBoost_NO_BOOST_CMAKE=ON \
+        -DBOOST_ROOT=/dls_sw/prod/tools/RHEL7-x86_64/boost/1-53-0/prefix \
         -DODINDATA_ROOT_DIR=${ODIN_DATA_PREFIX} \
         -DZEROMQ_ROOTDIR=${ZEROMQ_PREFIX} \
         -DLOG4CXX_ROOT_DIR=${LOG4CXX_PREFIX} \
