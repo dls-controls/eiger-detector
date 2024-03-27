@@ -5,6 +5,18 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Eiger Control Server",
+            "type": "python",
+            "request": "launch",
+            "program": "/dls_sw/work/odin/i03-stream2/venv/bin/eiger_control",
+            "args": [
+                "--config=${workspaceFolder:ADOdin}/iocs/eiger/eigerApp/data/odin_server.cfg",
+                "--logging=info",
+                "--access_logging=ERROR",
+            ],
+            "justMyCode": false
+        },
+        {
             "name": "EigerMetaWriter",
             "type": "python",
             "request": "launch",
