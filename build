@@ -1,0 +1,27 @@
+TAR_FILE=none
+
+build()
+{
+    if [ -v is_test ]; then
+        # On the build server - fix dirty git tree
+        git checkout ../configure/RELEASE
+    fi
+
+    echo "CMake Configure"
+    ${CMAKE_BIN}/cmake \
+        -DBoost_NO_BOOST_CMAKE=ON \
+        -DBOOST_ROOT=/dls_sw/prod/tools/RHEL7-x86_64/boost/1-53-0/prefix \
+        -DODINDATA_ROOT_DIR=${ODIN_DATA_PREFIX} \
+        -DZEROMQ_ROOTDIR=${ZEROMQ_PREFIX} \
+        -DLOG4CXX_ROOT_DIR=${LOG4CXX_PREFIX} \
+        -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+        -DCMAKE_INSTALL_PREFIX=${TARGET_PREFIX} \
+        ${BUILD_SCRIPT_DIR}/cpp || Error "Configure failed"
+
+    echo "Build"
+    make -j8 VERBOSE=1 && make install || Error "Build failed"
+
+    # Install the static html files for the odin control server
+    mkdir ${TARGET_PREFIX}/html
+    cp -r $BUILD_SCRIPT_DIR/python/src/eiger_detector/control/static ${TARGET_PREFIX}/html/
+}

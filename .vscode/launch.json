@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Eiger Control Server",
+            "type": "python",
+            "request": "launch",
+            "program": "/dls_sw/work/odin/i03-stream2/venv/bin/eiger_control",
+            "args": [
+                "--config=${workspaceFolder:ADOdin}/iocs/eiger/eigerApp/data/odin_server.cfg",
+                "--logging=info",
+                "--access_logging=ERROR",
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "EigerMetaWriter",
+            "type": "python",
+            "request": "launch",
+            "module": "odin_data.meta_writer.meta_writer_app",
+            "args": [
+                "--log-level=DEBUG",
+                "--writer=eiger_detector.EigerMetaWriter",
+            ]
+        },
+    ]
+}
