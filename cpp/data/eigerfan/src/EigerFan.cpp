@@ -88,6 +88,8 @@ EigerFan::EigerFan()
   this->log = log4cxx::Logger::getLogger("ED.EigerFan");
   LOG4CXX_INFO(log, "Creating EigerFan object from default options");
   killRequested = false;
+  restartRequested = false;
+  shutdownRequested = false;
   state = WAITING_CONSUMERS;
   currentSeries = 0;
   currentConsumerIndexToSendTo = 0;
@@ -115,6 +117,8 @@ EigerFan::EigerFan(EigerFanConfig config_)
   config = config_;
   LOG4CXX_INFO(log, "Creating EigerFan object from config options");
   killRequested = false;
+  restartRequested = false;
+  shutdownRequested = false;
   state = WAITING_CONSUMERS;
   currentSeries = 0;
   currentConsumerIndexToSendTo = 0;
@@ -144,245 +148,266 @@ void EigerFan::run()
   LOG4CXX_INFO(log, "EigerFan::run()");
   LOG4CXX_INFO(log, "Starting EigerFan");
 
-  // Setup Control socket
-  std::string controlAddress("tcp://*:");
-  controlAddress.append(config.ctrl_channel_port);
-  LOG4CXX_INFO(log, std::string("Binding control address to ").append(controlAddress));
-  controlSocket.bind(controlAddress.c_str());
-  controlSocket.setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
-
-  // Setup Fan Send Sockets
-  for (int i = 0; i < config.num_consumers; i++)
+  do
   {
-    std::ostringstream fanAddress;
-    int port = config.fan_channel_port_start + i;
-    fanAddress << "tcp://*:" << port;
+    restartRequested = false;
+    killRequested = false;
 
-    LOG4CXX_INFO(log, std::string("Binding fan send address to ").append(fanAddress.str()));
+    // Reset consumers
+    consumers.clear();
 
-    boost::shared_ptr<zmq::socket_t> sendSocket(new zmq::socket_t(ctx_, ZMQ_PUSH));
-    sendSocket->setsockopt(ZMQ_SNDHWM, &SEND_HWM, sizeof(SEND_HWM));
-    sendSocket->bind(fanAddress.str().c_str());
-    sendSocket->setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
-    EigerConsumer consumer;
-    consumer.connected = false;
-    consumer.sendSocket = sendSocket;
-    consumers.push_back(consumer);
-    num_frames_consumed.push_back(0);
-  }
+    // Re-create control and forward sockets
+    controlSocket = zmq::socket_t(ctx_, ZMQ_ROUTER);
+    forwardSocket = zmq::socket_t(ctx_, ZMQ_PUSH);
 
-  std::vector<boost::shared_ptr<zmq::socket_t>> monitorSockets;
-  for (int i = 0; i < config.num_consumers; i++)
-  {
-    std::ostringstream monitorAddress;
-    int port = config.fan_channel_port_start + i;
-    monitorAddress << "inproc://monitor-sender" << port;
+    // Setup Control socket
+    std::string controlAddress("tcp://*:");
+    controlAddress.append(config.ctrl_channel_port);
+    LOG4CXX_INFO(log, std::string("Binding control address to ").append(controlAddress));
+    controlSocket.bind(controlAddress.c_str());
+    controlSocket.setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
 
-    // Setup monitor for Fan Send Socket to listen to accepted and disconnected events
+    // Setup Fan Send Sockets
+    for (int i = 0; i < config.num_consumers; i++)
+    {
+      std::ostringstream fanAddress;
+      int port = config.fan_channel_port_start + i;
+      fanAddress << "tcp://*:" << port;
 
-    zmq::socket_t *socketToMonitor = consumers[i].sendSocket.get();
+      LOG4CXX_INFO(log, std::string("Binding fan send address to ").append(fanAddress.str()));
 
-    int rc = zmq_socket_monitor(*socketToMonitor, monitorAddress.str().c_str(), ZMQ_EVENT_ACCEPTED | ZMQ_EVENT_DISCONNECTED);
+      boost::shared_ptr<zmq::socket_t> sendSocket(new zmq::socket_t(ctx_, ZMQ_PUSH));
+      sendSocket->setsockopt(ZMQ_SNDHWM, &SEND_HWM, sizeof(SEND_HWM));
+      sendSocket->bind(fanAddress.str().c_str());
+      sendSocket->setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
+      EigerConsumer consumer;
+      consumer.connected = false;
+      consumer.sendSocket = sendSocket;
+      consumers.push_back(consumer);
+      num_frames_consumed.push_back(0);
+    }
+
+    std::vector<boost::shared_ptr<zmq::socket_t>> monitorSockets;
+    for (int i = 0; i < config.num_consumers; i++)
+    {
+      std::ostringstream monitorAddress;
+      int port = config.fan_channel_port_start + i;
+      monitorAddress << "inproc://monitor-sender" << port;
+      LOG4CXX_DEBUG(log, "Monitor address: " << monitorAddress.str());
+
+      // Setup monitor for Fan Send Socket to listen to accepted and disconnected events
+
+      zmq::socket_t *socketToMonitor = consumers[i].sendSocket.get();
+
+      int rc = zmq_socket_monitor(*socketToMonitor, monitorAddress.str().c_str(), ZMQ_EVENT_ACCEPTED | ZMQ_EVENT_DISCONNECTED);
+      if (rc < 0)
+      {
+        LOG4CXX_ERROR(log, "Error setting up monitor. 0MQ Error number: " << zmq_errno());
+        return;
+      }
+      boost::shared_ptr<zmq::socket_t> monitorSocket(new zmq::socket_t(ctx_, ZMQ_PAIR));
+      monitorSocket->connect(monitorAddress.str().c_str());
+      monitorSocket->setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
+      monitorSockets.push_back(monitorSocket);
+    }
+
+    // Setup Forwarding Socket
+    std::string forwardAddress("tcp://*:");
+    forwardAddress.append(config.forward_channel_port);
+    LOG4CXX_INFO(log, std::string("Binding forwarding address to ").append(forwardAddress));
+    forwardSocket.setsockopt(ZMQ_SNDHWM, &SEND_HWM, sizeof(SEND_HWM));
+    forwardSocket.bind(forwardAddress.c_str());
+    forwardSocket.setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
+
+    // Setup Forwarding Socket monitor
+    std::ostringstream forwardMonitorAddress;
+    forwardMonitorAddress << "inproc://forward-monitor-sender";
+
+    int rc = zmq_socket_monitor(forwardSocket, forwardMonitorAddress.str().c_str(), ZMQ_EVENT_ACCEPTED | ZMQ_EVENT_DISCONNECTED);
     if (rc < 0)
     {
-      LOG4CXX_ERROR(log, "Error setting up monitor. 0MQ Error number: " << zmq_errno());
+      LOG4CXX_ERROR(log, "Error setting up forwarding monitor. 0MQ Error number: " << zmq_errno());
       return;
     }
-    boost::shared_ptr<zmq::socket_t> monitorSocket(new zmq::socket_t(ctx_, ZMQ_PAIR));
-    monitorSocket->connect(monitorAddress.str().c_str());
-    monitorSocket->setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
-    monitorSockets.push_back(monitorSocket);
-  }
+    zmq::socket_t forwardMonitorSocket(ctx_, ZMQ_PAIR);
+    forwardMonitorSocket.connect(forwardMonitorAddress.str().c_str());
+    forwardMonitorSocket.setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
 
-  // Setup Forwarding Socket
-  std::string forwardAddress("tcp://*:");
-  forwardAddress.append(config.forward_channel_port);
-  LOG4CXX_INFO(log, std::string("Binding forwarding address to ").append(forwardAddress));
-  forwardSocket.setsockopt(ZMQ_SNDHWM, &SEND_HWM, sizeof(SEND_HWM));
-  forwardSocket.bind(forwardAddress.c_str());
-  forwardSocket.setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
+    // Wait for configured number of consumers to connect
+    LOG4CXX_INFO(log, "Waiting for Consumers");
 
-  // Setup Forwarding Socket monitor
-  std::ostringstream forwardMonitorAddress;
-  forwardMonitorAddress << "inproc://forward-monitor-sender";
-
-  int rc = zmq_socket_monitor(forwardSocket, forwardMonitorAddress.str().c_str(), ZMQ_EVENT_ACCEPTED | ZMQ_EVENT_DISCONNECTED);
-  if (rc < 0)
-  {
-    LOG4CXX_ERROR(log, "Error setting up forwarding monitor. 0MQ Error number: " << zmq_errno());
-    return;
-  }
-  zmq::socket_t forwardMonitorSocket(ctx_, ZMQ_PAIR);
-  forwardMonitorSocket.connect(forwardMonitorAddress.str().c_str());
-  forwardMonitorSocket.setsockopt(ZMQ_LINGER, &LINGER_TIMEOUT, sizeof(LINGER_TIMEOUT));
-
-  // Wait for configured number of consumers to connect
-  LOG4CXX_INFO(log, "Waiting for Consumers");
-
-  //  Initialise pre-run poll set (num consumers + control socket + forward socket)
-  zmq::pollitem_t preRunPollItems[config.num_consumers + 1 + 1];
-  zmq_pollitem_t controlPollItem;
-  controlPollItem.socket = controlSocket;
-  controlPollItem.fd = 0;
-  controlPollItem.events = ZMQ_POLLIN;
-  controlPollItem.revents = 0;
-  preRunPollItems[0] = controlPollItem;
-
-  for (int i = 0; i < config.num_consumers; i++)
-  {
-    zmq_pollitem_t monitorPollItem;
-    zmq::socket_t *monitorSocket = monitorSockets[i].get();
-    monitorPollItem.socket = *monitorSocket;
-    monitorPollItem.fd = 0;
-    monitorPollItem.events = ZMQ_POLLIN;
-    monitorPollItem.revents = 0;
-    preRunPollItems[i + 1] = monitorPollItem;
-  }
-
-  zmq_pollitem_t forwardMonitorPollItem;
-  forwardMonitorPollItem.socket = forwardMonitorSocket;
-  forwardMonitorPollItem.fd = 0;
-  forwardMonitorPollItem.events = ZMQ_POLLIN;
-  forwardMonitorPollItem.revents = 0;
-  preRunPollItems[config.num_consumers + 1] = forwardMonitorPollItem;
-
-  while (ExpectedConsumersConnected() != true && killRequested != true)
-  {
-    zmq::message_t pollMessage;
-    zmq::poll(&preRunPollItems[0], config.num_consumers + 1 + 1, -1);
-
-    if (preRunPollItems[0].revents & ZMQ_POLLIN)
-    {
-      zmq::message_t idMessage;
-      controlSocket.recv(&idMessage);
-      controlSocket.recv(&pollMessage);
-      HandleControlMessage(pollMessage, idMessage);
-    }
+    //  Initialise pre-run poll set (num consumers + control socket + forward socket)
+    zmq::pollitem_t preRunPollItems[config.num_consumers + 1 + 1];
+    zmq_pollitem_t controlPollItem;
+    controlPollItem.socket = controlSocket;
+    controlPollItem.fd = 0;
+    controlPollItem.events = ZMQ_POLLIN;
+    controlPollItem.revents = 0;
+    preRunPollItems[0] = controlPollItem;
 
     for (int i = 0; i < config.num_consumers; i++)
     {
-      if (preRunPollItems[i + 1].revents & ZMQ_POLLIN)
+      zmq_pollitem_t monitorPollItem;
+      zmq::socket_t *monitorSocket = monitorSockets[i].get();
+      monitorPollItem.socket = *monitorSocket;
+      monitorPollItem.fd = 0;
+      monitorPollItem.events = ZMQ_POLLIN;
+      monitorPollItem.revents = 0;
+      preRunPollItems[i + 1] = monitorPollItem;
+    }
+
+    zmq_pollitem_t forwardMonitorPollItem;
+    forwardMonitorPollItem.socket = forwardMonitorSocket;
+    forwardMonitorPollItem.fd = 0;
+    forwardMonitorPollItem.events = ZMQ_POLLIN;
+    forwardMonitorPollItem.revents = 0;
+    preRunPollItems[config.num_consumers + 1] = forwardMonitorPollItem;
+
+    while (ExpectedConsumersConnected() != true && killRequested != true)
+    {
+      zmq::message_t pollMessage;
+      zmq::poll(&preRunPollItems[0], config.num_consumers + 1 + 1, -1);
+
+      if (preRunPollItems[0].revents & ZMQ_POLLIN)
       {
-        monitorSockets[i]->recv(&pollMessage);
-        HandleMonitorMessage(pollMessage, monitorSockets[i], i);
+        zmq::message_t idMessage;
+        controlSocket.recv(&idMessage);
+        controlSocket.recv(&pollMessage);
+        HandleControlMessage(pollMessage, idMessage);
+      }
+
+      for (int i = 0; i < config.num_consumers; i++)
+      {
+        if (preRunPollItems[i + 1].revents & ZMQ_POLLIN)
+        {
+          monitorSockets[i]->recv(&pollMessage);
+          HandleMonitorMessage(pollMessage, monitorSockets[i], i);
+        }
+      }
+
+      if (preRunPollItems[config.num_consumers + 1].revents & ZMQ_POLLIN)
+      {
+        forwardMonitorSocket.recv(&pollMessage);
+        HandleForwardMonitorMessage(pollMessage, forwardMonitorSocket);
       }
     }
 
-    if (preRunPollItems[config.num_consumers + 1].revents & ZMQ_POLLIN)
+    if (killRequested)
     {
-      forwardMonitorSocket.recv(&pollMessage);
-      HandleForwardMonitorMessage(pollMessage, forwardMonitorSocket);
+      LOG4CXX_INFO(log, "Kill was requested before all consumers had joined");
+      for (int i = 0; i < config.num_consumers; i++)
+      {
+        monitorSockets[i]->close();
+        consumers[i].sendSocket->close();
+      }
+      forwardSocket.close();
+      controlSocket.close();
+      return;
     }
-  }
 
-  if (killRequested)
-  {
-    LOG4CXX_INFO(log, "Kill was requested before all consumers had joined");
+    std::ostringstream oss;
+    oss << "All " << GetNumberOfConnectedConsumers() << " expected consumers connected. Connecting to Eiger Stream";
+
+    LOG4CXX_INFO(log, oss.str());
+
+    std::string streamConnectionAddress("tcp://");
+    streamConnectionAddress.append(config.eiger_channel_address);
+    streamConnectionAddress.append(":");
+    streamConnectionAddress.append(config.eiger_channel_port);
+    LOG4CXX_INFO(log, std::string("Connecting to stream address at ").append(streamConnectionAddress));
+
+    //  Initialise run poll set
+    zmq::pollitem_t runPollItems[config.num_consumers + 1 + 1]; // consumers + control + forward
+    zmq_pollitem_t controlRunPollItem;
+    controlRunPollItem.socket = controlSocket;
+    controlRunPollItem.fd = 0;
+    controlRunPollItem.events = ZMQ_POLLIN;
+    controlRunPollItem.revents = 0;
+    runPollItems[0] = controlRunPollItem;
+
+    for (int i = 0; i < config.num_consumers; i++)
+    {
+      zmq_pollitem_t monitorPollItem;
+      zmq::socket_t *monitorSocket = monitorSockets[i].get();
+      monitorPollItem.socket = *monitorSocket;
+      monitorPollItem.fd = 0;
+      monitorPollItem.events = ZMQ_POLLIN;
+      monitorPollItem.revents = 0;
+      runPollItems[i + 1] = monitorPollItem;
+    }
+
+    zmq_pollitem_t forwardinMonitorPollItem;
+    forwardinMonitorPollItem.socket = forwardMonitorSocket;
+    forwardinMonitorPollItem.fd = 0;
+    forwardinMonitorPollItem.events = ZMQ_POLLIN;
+    forwardinMonitorPollItem.revents = 0;
+    runPollItems[config.num_consumers + 1] = forwardinMonitorPollItem;
+
+    // Spawn rx thread
+    LOG4CXX_INFO(log, "Spawning rx thread");
+    this->rx_thread_ = boost::shared_ptr<boost::thread>(
+        new boost::thread(boost::bind(&EigerFan::HandleRxSocket, this, streamConnectionAddress, config.num_zmq_context_threads)));
+
+    while (state != WAITING_STREAM)
+    {
+      sleep(1);
+    }
+
+    //  Process tasks forever or until kill is requested
+    LOG4CXX_INFO(log, "Processing control tasks");
+    while (killRequested != true)
+    {
+      zmq::message_t message;
+      zmq::poll(&runPollItems[0], config.num_consumers + 1 + 1, -1); // Monitor per consumer + control + forward
+
+      // Control socket events
+      if (runPollItems[0].revents & ZMQ_POLLIN)
+      {
+        zmq::message_t idMessage;
+        controlSocket.recv(&idMessage);
+        controlSocket.recv(&message);
+        HandleControlMessage(message, idMessage);
+        if (killRequested)
+        {
+          break;
+        }
+      }
+
+      // Monitor socket events
+      for (int i = 0; i < config.num_consumers; i++)
+      {
+        if (runPollItems[i + 1].revents & ZMQ_POLLIN)
+        {
+          monitorSockets[i]->recv(&message);
+          HandleMonitorMessage(message, monitorSockets[i], i);
+        }
+      }
+
+      // Forwarding Monitor socket events
+      if (runPollItems[config.num_consumers + 1].revents & ZMQ_POLLIN)
+      {
+        forwardMonitorSocket.recv(&message);
+        HandleForwardMonitorMessage(message, forwardMonitorSocket);
+      }
+    }
+
+    LOG4CXX_INFO(log, "Shutting down EigerFan sockets");
     for (int i = 0; i < config.num_consumers; i++)
     {
       monitorSockets[i]->close();
       consumers[i].sendSocket->close();
     }
+
     forwardSocket.close();
     controlSocket.close();
-    return;
-  }
 
-  std::ostringstream oss;
-  oss << "All " << GetNumberOfConnectedConsumers() << " expected consumers connected. Connecting to Eiger Stream";
-
-  LOG4CXX_INFO(log, oss.str());
-
-  std::string streamConnectionAddress("tcp://");
-  streamConnectionAddress.append(config.eiger_channel_address);
-  streamConnectionAddress.append(":");
-  streamConnectionAddress.append(config.eiger_channel_port);
-  LOG4CXX_INFO(log, std::string("Connecting to stream address at ").append(streamConnectionAddress));
-
-  //  Initialise run poll set
-  zmq::pollitem_t runPollItems[config.num_consumers + 1 + 1]; // consumers + control + forward
-  zmq_pollitem_t controlRunPollItem;
-  controlRunPollItem.socket = controlSocket;
-  controlRunPollItem.fd = 0;
-  controlRunPollItem.events = ZMQ_POLLIN;
-  controlRunPollItem.revents = 0;
-  runPollItems[0] = controlRunPollItem;
-
-  for (int i = 0; i < config.num_consumers; i++)
-  {
-    zmq_pollitem_t monitorPollItem;
-    zmq::socket_t *monitorSocket = monitorSockets[i].get();
-    monitorPollItem.socket = *monitorSocket;
-    monitorPollItem.fd = 0;
-    monitorPollItem.events = ZMQ_POLLIN;
-    monitorPollItem.revents = 0;
-    runPollItems[i + 1] = monitorPollItem;
-  }
-
-  zmq_pollitem_t forwardinMonitorPollItem;
-  forwardinMonitorPollItem.socket = forwardMonitorSocket;
-  forwardinMonitorPollItem.fd = 0;
-  forwardinMonitorPollItem.events = ZMQ_POLLIN;
-  forwardinMonitorPollItem.revents = 0;
-  runPollItems[config.num_consumers + 1] = forwardinMonitorPollItem;
-
-  // Spawn rx thread
-  LOG4CXX_INFO(log, "Spawning rx thread");
-  this->rx_thread_ = boost::shared_ptr<boost::thread>(
-      new boost::thread(boost::bind(&EigerFan::HandleRxSocket, this, streamConnectionAddress, config.num_zmq_context_threads)));
-
-  while (state != WAITING_STREAM)
-  {
-    sleep(1);
-  }
-
-  //  Process tasks forever or until kill is requested
-  LOG4CXX_INFO(log, "Processing control tasks");
-  while (killRequested != true)
-  {
-    zmq::message_t message;
-    zmq::poll(&runPollItems[0], config.num_consumers + 1 + 1, -1); // Monitor per consumer + control + forward
-
-    // Control socket events
-    if (runPollItems[0].revents & ZMQ_POLLIN)
+    if (restartRequested)
     {
-      zmq::message_t idMessage;
-      controlSocket.recv(&idMessage);
-      controlSocket.recv(&message);
-      HandleControlMessage(message, idMessage);
-      if (killRequested)
-      {
-        break;
-      }
+      LOG4CXX_INFO(log, "Waiting for sockets to fully release before restart");
+      usleep(500000);  // 500ms — tune to taste
     }
 
-    // Monitor socket events
-    for (int i = 0; i < config.num_consumers; i++)
-    {
-      if (runPollItems[i + 1].revents & ZMQ_POLLIN)
-      {
-        monitorSockets[i]->recv(&message);
-        HandleMonitorMessage(message, monitorSockets[i], i);
-      }
-    }
-
-    // Forwarding Monitor socket events
-    if (runPollItems[config.num_consumers + 1].revents & ZMQ_POLLIN)
-    {
-      forwardMonitorSocket.recv(&message);
-      HandleForwardMonitorMessage(message, forwardMonitorSocket);
-    }
-  }
-
-  LOG4CXX_INFO(log, "Shutting down EigerFan sockets");
-  for (int i = 0; i < config.num_consumers; i++)
-  {
-    monitorSockets[i]->close();
-    consumers[i].sendSocket->close();
-  }
-
-  forwardSocket.close();
-  controlSocket.close();
+  } while (restartRequested && !shutdownRequested);
 }
 
 /**
@@ -427,6 +452,17 @@ void EigerFan::Stop()
 {
   LOG4CXX_INFO(log, "Stop requested");
   killRequested = true;
+  shutdownRequested = true;
+  state = KILL_REQUESTED;
+}
+
+/**
+ * Request the EigerFan to restart
+ */
+void EigerFan::Restart() {
+  LOG4CXX_INFO(log, "Restart requested");
+  killRequested = true;
+  restartRequested = true;
   state = KILL_REQUESTED;
 }
 
@@ -903,6 +939,17 @@ void EigerFan::HandleControlMessage(zmq::message_t &message, zmq::message_t &idM
             SendFabricatedEndMessage();
           }
           Stop();
+          replyString.assign(CONTROL_RESPONSE_OK.c_str());
+        }
+        else if (paramsValue.HasMember(CONTROL_RESTART.c_str()))
+        {
+          // Restart gracefully - if currently acquiring data, send end of stream message,
+          // then tear down and rebind sockets instead of terminating the process
+          if (state == DSTR_HEADER || state == DSTR_IMAGE)
+          {
+            SendFabricatedEndMessage();
+          }
+          Restart();
           replyString.assign(CONTROL_RESPONSE_OK.c_str());
         }
         if (paramsValue.HasMember(CONTROL_OFFSET.c_str()))

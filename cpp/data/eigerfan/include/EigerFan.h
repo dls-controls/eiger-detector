@@ -41,6 +41,7 @@ public:
   void HandleRxSocket(std::string &endpoint, int num_zmq_context_threads);
   void Stop();
   void SetNumberOfConsumers(int number);
+  void Restart();  
 
 protected:
   void HandleStreamMessage(zmq::message_t &message, boost::shared_ptr<zmq::socket_t> socket);
@@ -69,6 +70,9 @@ private:
   MultiPullBroker broker;
   boost::shared_ptr<boost::thread> rx_thread_;
   std::vector<EigerConsumer> consumers;
+
+  bool restartRequested;
+  bool shutdownRequested;
 
   bool killRequested;
   Eiger::EigerFanState state;

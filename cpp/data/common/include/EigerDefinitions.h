@@ -46,6 +46,7 @@ namespace Eiger
   const std::string CONTROL_FWD_STREAM = "forward_stream";
   const std::string CONTROL_DEV_SHM_CACHE = "dev_shm_cache";
   const std::string CONTROL_BLOCK_SIZE = "block_size";
+  const std::string CONTROL_RESTART = "restart";
 
   const std::string CONTROL_RESPONSE_OK = "{\"msg_type\":\"ack\",\"msg_val\":\"configure\", \"params\": {}}";
   const std::string CONTROL_RESPONSE_UNABLE = "{\"msg_type\":\"nack\",\"msg_val\":\"configure\", \"params\": {\"error\":\"Unable to process control command\"}}";
